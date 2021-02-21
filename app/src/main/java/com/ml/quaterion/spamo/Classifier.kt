@@ -1,36 +1,29 @@
 package com.ml.quaterion.spamo
 
 import android.content.Context
-import android.os.AsyncTask
-import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.IOException
-import java.lang.Exception
 import java.util.*
 import kotlin.collections.HashMap
-import kotlin.math.max
 
-class Classifier  {
+class Classifier(context: Context, jsonFilename: String , inputMaxLen : Int ) {
 
-    private var context : Context? = null
-    private var filename : String? = null
-    private var callback : DataCallback? = null
-    private var maxlen : Int? = null
+    private var context : Context? = context
+
+    // Filename for the exported vocab ( .json )
+    private var filename : String? = jsonFilename
+
+    // Max length of the input sequence for the given model.
+    private var maxlen : Int = inputMaxLen
+
     private var vocabData : HashMap< String , Int >? = null
 
-    constructor( context: Context , jsonFilename : String ){
-        this.context = context
-        this.filename = jsonFilename
-    }
-
-
-    fun loadData () {
-        val loadVocabularyTask = LoadVocabularyTask( callback )
-        loadVocabularyTask.execute( loadJSONFromAsset( filename ))
-    }
-
+    // Load the contents of the vocab ( see assets/word_dict.json )
     private fun loadJSONFromAsset(filename : String? ): String? {
-        var json: String? = null
+        var json: String?
         try {
             val inputStream = context!!.assets.open(filename )
             val size = inputStream.available()
@@ -46,21 +39,23 @@ class Classifier  {
         return json
     }
 
-    fun setCallback( callback: DataCallback ) {
-        this.callback = callback
+    fun processVocab( callback: VocabCallback ) {
+        CoroutineScope( Dispatchers.Main ).launch {
+            loadVocab( callback , loadJSONFromAsset( filename )!! )
+        }
     }
 
+    // Tokenize the given sentence
     fun tokenize ( message : String ): IntArray {
         val parts : List<String> = message.split(" " )
         val tokenizedMessage = ArrayList<Int>()
         for ( part in parts ) {
             if (part.trim() != ""){
                 var index : Int? = 0
-                if ( vocabData!![part] == null ) {
-                    index = 0
-                }
-                else{
-                    index = vocabData!![part]
+                index = if ( vocabData!![part] == null ) {
+                    0
+                } else{
+                    vocabData!![part]
                 }
                 tokenizedMessage.add( index!! )
             }
@@ -68,9 +63,10 @@ class Classifier  {
         return tokenizedMessage.toIntArray()
     }
 
+    // Pad the given sequence to maxlen with zeros.
     fun padSequence ( sequence : IntArray ) : IntArray {
         val maxlen = this.maxlen
-        if ( sequence.size > maxlen!!) {
+        if ( sequence.size > maxlen ) {
             return sequence.sliceArray( 0..maxlen )
         }
         else if ( sequence.size < maxlen ) {
@@ -86,38 +82,25 @@ class Classifier  {
         }
     }
 
-    fun setVocab( data : HashMap<String, Int>? ) {
-        this.vocabData = data
+
+    interface VocabCallback {
+        fun onVocabProcessed()
     }
 
-    fun setMaxLength( maxlen : Int ) {
-        this.maxlen = maxlen
-    }
-
-    interface DataCallback {
-        fun onDataProcessed( result : HashMap<String, Int>?)
-    }
-
-    private inner class LoadVocabularyTask(callback: DataCallback?) : AsyncTask<String, Void, HashMap<String, Int>?>() {
-
-        private var callback : DataCallback? = callback
-
-        override fun doInBackground(vararg params: String?): HashMap<String, Int>? {
-            val jsonObject = JSONObject( params[0] )
+    private fun loadVocab(callback : VocabCallback, json : String )  {
+        with( Dispatchers.Default ) {
+            val jsonObject = JSONObject( json )
             val iterator : Iterator<String> = jsonObject.keys()
             val data = HashMap< String , Int >()
             while ( iterator.hasNext() ) {
                 val key = iterator.next()
-                data.put( key , jsonObject.get( key ) as Int )
+                data[key] = jsonObject.get( key ) as Int
             }
-            return data
+            with( Dispatchers.Main ){
+                vocabData = data
+                callback.onVocabProcessed()
+            }
         }
-
-        override fun onPostExecute(result: HashMap<String, Int>?) {
-            super.onPostExecute(result)
-            callback?.onDataProcessed( result )
-        }
-
     }
 
 }
