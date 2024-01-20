@@ -3,7 +3,17 @@
 
 An Android Project to demonstrate the use of a TensorFlow Lite model to classify spam messages.
 
-## Major Updates as of February 2021
+## Updates 
+
+### January 2024
+
+* Replaced XML-based UI with Jetpack Compose
+* Set `compileSdk=34`
+* Async inference in `Classifier.kt` with Coroutines
+* Added version catalogs
+* Replaced Groovy build scripts with Kotlin build scripts
+
+### February 2021
 
 * Improved `Classifier.kt` by removing unwanted methods.
 * Added documentation for classes and methods in `Classifier.kt` and `MainActivity.kt`.
