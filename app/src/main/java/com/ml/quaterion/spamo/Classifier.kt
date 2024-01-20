@@ -1,105 +1,125 @@
 package com.ml.quaterion.spamo
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.FileUtil
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
+import java.nio.MappedByteBuffer
 import java.util.*
 import kotlin.collections.HashMap
 
-class Classifier(context: Context, jsonFilename: String , inputMaxLen : Int ) {
+class Classifier(
+    private val context: Context
+) {
 
-    private var context : Context? = context
+    private lateinit var vocabData : HashMap<String,Int>
+    private lateinit var tfLiteInterpreter : Interpreter
 
-    // Filename for the exported vocab ( .json )
-    private var filename : String? = jsonFilename
-
-    // Max length of the input sequence for the given model.
-    private var maxlen : Int = inputMaxLen
-
-    private var vocabData : HashMap< String , Int >? = null
-
-    // Load the contents of the vocab ( see assets/word_dict.json )
-    private fun loadJSONFromAsset(filename : String? ): String? {
-        var json: String?
-        try {
-            val inputStream = context!!.assets.open(filename )
-            val size = inputStream.available()
-            val buffer = ByteArray(size)
-            inputStream.read(buffer)
-            inputStream.close()
-            json = String(buffer)
+    fun load(
+        modelAssetsName: String ,
+        vocabAssetsName: String ,
+        onComplete: () -> Unit
+    ) {
+        CoroutineScope( Dispatchers.Default ).launch {
+            val interpreter = loadModel( modelAssetsName )
+            val vocab = loadVocab( vocabAssetsName )
+            if( vocab != null && interpreter != null ) {
+                this@Classifier.vocabData = vocab
+                this@Classifier.tfLiteInterpreter = interpreter
+                withContext( Dispatchers.Main ) {
+                    onComplete()
+                }
+            }
+            else {
+                throw Exception( "Could not load model" )
+            }
         }
-        catch (ex: IOException) {
-            ex.printStackTrace()
-            return null
-        }
-        return json
     }
 
-    fun processVocab( callback: VocabCallback ) {
-        CoroutineScope( Dispatchers.Main ).launch {
-            loadVocab( callback , loadJSONFromAsset( filename )!! )
+
+    fun classify(
+        text: String ,
+        onComplete: ((FloatArray) -> Unit)
+    ) {
+        CoroutineScope( Dispatchers.Default ).launch {
+            val inputs : Array<FloatArray> = arrayOf(
+                padSequence( tokenize( text ) )
+                .map{ it.toFloat() }
+                .toFloatArray()
+            )
+            // Output shape -> ( 1 , 2 ) ( as numClasses = 2 )
+            val outputs : Array<FloatArray> = arrayOf( FloatArray( 2 ) )
+            tfLiteInterpreter.run( inputs , outputs )
+            onComplete( outputs[0] )
         }
     }
 
     // Tokenize the given sentence
-    fun tokenize ( message : String ): IntArray {
-        val parts : List<String> = message.split(" " )
-        val tokenizedMessage = ArrayList<Int>()
-        for ( part in parts ) {
-            if (part.trim() != ""){
-                var index : Int? = 0
-                index = if ( vocabData!![part] == null ) {
-                    0
-                } else{
-                    vocabData!![part]
-                }
-                tokenizedMessage.add( index!! )
-            }
-        }
-        return tokenizedMessage.toIntArray()
+    fun tokenize(
+        message : String
+    ): IntArray {
+        return message
+            .split(" " )
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { part -> vocabData[part] ?: 0 }
+            .toIntArray()
     }
 
-    // Pad the given sequence to maxlen with zeros.
-    fun padSequence ( sequence : IntArray ) : IntArray {
-        val maxlen = this.maxlen
-        if ( sequence.size > maxlen ) {
-            return sequence.sliceArray( 0..maxlen )
+    // Pad the given sequence to `maxlen` with zeros.
+    fun padSequence(
+        sequence : IntArray
+    ) : IntArray {
+        val paddedSequence = IntArray( 120 ){ 0 }
+        sequence.forEachIndexed { index, i ->
+            paddedSequence[i] = index
         }
-        else if ( sequence.size < maxlen ) {
-            val array = ArrayList<Int>()
-            array.addAll( sequence.asList() )
-            for ( i in array.size until maxlen ){
-                array.add(0)
-            }
-            return array.toIntArray()
-        }
-        else{
-            return sequence
-        }
+        return paddedSequence
     }
 
-
-    interface VocabCallback {
-        fun onVocabProcessed()
-    }
-
-    private fun loadVocab(callback : VocabCallback, json : String )  {
-        with( Dispatchers.Default ) {
-            val jsonObject = JSONObject( json )
-            val iterator : Iterator<String> = jsonObject.keys()
-            val data = HashMap< String , Int >()
-            while ( iterator.hasNext() ) {
+    private suspend fun loadVocab(
+        vocabAssetsName: String
+    ): HashMap<String,Int>? = withContext( Dispatchers.IO ) {
+        Log.d( "Model" , "Loading vocab from $vocabAssetsName" )
+        val inputStream = context.assets?.open( vocabAssetsName )
+        if( inputStream != null ) {
+            val reader = BufferedReader( InputStreamReader( inputStream ) )
+            val jsonContents = reader.readText()
+            val jsonObject = JSONObject( jsonContents )
+            val iterator: Iterator<String> = jsonObject.keys()
+            val data = HashMap<String, Int>()
+            while (iterator.hasNext()) {
                 val key = iterator.next()
-                data[key] = jsonObject.get( key ) as Int
+                val index = jsonObject.get( key )
+                if( index is Int ) {
+                    data[ key ] = index.toInt()
+                }
             }
-            with( Dispatchers.Main ){
-                vocabData = data
-                callback.onVocabProcessed()
-            }
+            return@withContext data
+        }
+        else { null }
+    }
+
+    private suspend fun loadModel(
+        modelAssetsName: String
+    ): Interpreter? = withContext( Dispatchers.IO ) {
+        Log.d( "Model" , "Loading model from $modelAssetsName" )
+        return@withContext try {
+            Interpreter( FileUtil.loadMappedFile(context, modelAssetsName) )
+        }
+        catch (e: IOException) {
+            e.printStackTrace()
+            null
         }
     }
 
